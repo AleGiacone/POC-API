@@ -1,0 +1,663 @@
+// package.json
+{
+  "name": "openrpc-mikroorm-server",
+  "version": "1.0.0",
+  "description": "OpenRPC server with MikroORM integration",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "migrate": "mikro-orm migration:create"
+  },
+  "dependencies": {
+    "@open-rpc/server-js": "^1.9.5",
+    "@mikro-orm/core": "^5.9.7",
+    "@mikro-orm/postgresql": "^5.9.7",
+    "@mikro-orm/migrations": "^5.9.7",
+    "@mikro-orm/cli": "^5.9.7",
+    "reflect-metadata": "^0.1.13",
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.1"
+  },
+  "mikro-orm": {
+    "useTsNode": true,
+    "configPaths": [
+      "./src/mikro-orm.config.ts",
+      "./dist/mikro-orm.config.js"
+    ]
+  }
+}
+
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+
+// src/entities/User.ts
+import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+
+@Entity()
+export class User {
+  @PrimaryKey()
+  id!: number;
+
+  @Property()
+  name!: string;
+
+  @Property({ unique: true })
+  email!: string;
+
+  @Property()
+  createdAt = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt = new Date();
+}
+
+// src/mikro-orm.config.ts
+import { Options } from '@mikro-orm/core';
+import { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import { User } from './entities/User';
+
+const config: Options<PostgreSqlDriver> = {
+  entities: [User],
+  dbName: 'openrpc_db',
+  type: 'postgresql',
+  host: 'localhost',
+  port: 5432,
+  user: 'postgres',
+  password: 'password',
+  migrations: {
+    path: './src/migrations',
+    pathTs: './src/migrations',
+  },
+  debug: true,
+};
+
+export default config;
+
+// src/database.ts
+import { MikroORM } from '@mikro-orm/core';
+import { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import config from './mikro-orm.config';
+
+export class Database {
+  public orm!: MikroORM<PostgreSqlDriver>;
+
+  async connect(): Promise<void> {
+    try {
+      this.orm = await MikroORM.init(config);
+      console.log('✅ Database connected successfully');
+      
+      // Ejecutar migraciones automáticamente
+      const migrator = this.orm.getMigrator();
+      await migrator.up();
+      console.log('✅ Migrations executed successfully');
+    } catch (error) {
+      console.error('❌ Database connection failed:', error);
+      throw error;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.orm) {
+      await this.orm.close();
+      console.log('✅ Database disconnected');
+    }
+  }
+
+  getEntityManager() {
+    return this.orm.em.fork();
+  }
+}
+
+// src/rpc-methods.ts
+import { Database } from './database';
+import { User } from './entities/User';
+
+export interface CreateUserParams {
+  name: string;
+  email: string;
+}
+
+export interface UpdateUserParams {
+  id: number;
+  name?: string;
+  email?: string;
+}
+
+export interface GetUserParams {
+  id: number;
+}
+
+export interface DeleteUserParams {
+  id: number;
+}
+
+export class UserService {
+  constructor(private database: Database) {}
+
+  async createUser(params: CreateUserParams) {
+    const em = this.database.getEntityManager();
+    
+    try {
+      const user = new User();
+      user.name = params.name;
+      user.email = params.email;
+
+      await em.persistAndFlush(user);
+
+      return {
+        success: true,
+        data: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async getUserById(params: GetUserParams) {
+    const em = this.database.getEntityManager();
+    
+    try {
+      const user = await em.findOne(User, params.id);
+      
+      if (!user) {
+        return {
+          success: false,
+          error: 'User not found'
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async getAllUsers() {
+    const em = this.database.getEntityManager();
+    
+    try {
+      const users = await em.findAll(User);
+
+      return {
+        success: true,
+        data: users.map(user => ({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }))
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async updateUser(params: UpdateUserParams) {
+    const em = this.database.getEntityManager();
+    
+    try {
+      const user = await em.findOne(User, params.id);
+      
+      if (!user) {
+        return {
+          success: false,
+          error: 'User not found'
+        };
+      }
+
+      if (params.name !== undefined) {
+        user.name = params.name;
+      }
+      
+      if (params.email !== undefined) {
+        user.email = params.email;
+      }
+
+      await em.persistAndFlush(user);
+
+      return {
+        success: true,
+        data: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async deleteUser(params: DeleteUserParams) {
+    const em = this.database.getEntityManager();
+    
+    try {
+      const user = await em.findOne(User, params.id);
+      
+      if (!user) {
+        return {
+          success: false,
+          error: 'User not found'
+        };
+      }
+
+      await em.removeAndFlush(user);
+
+      return {
+        success: true,
+        message: 'User deleted successfully'
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+}
+
+// src/openrpc-schema.ts
+export const openRPCDocument = {
+  openrpc: "1.2.6",
+  info: {
+    title: "User Management API",
+    description: "API para gestión de usuarios usando OpenRPC y MikroORM",
+    version: "1.0.0"
+  },
+  methods: [
+    {
+      name: "createUser",
+      description: "Crear un nuevo usuario",
+      params: [
+        {
+          name: "name",
+          description: "Nombre del usuario",
+          required: true,
+          schema: {
+            type: "string"
+          }
+        },
+        {
+          name: "email",
+          description: "Email del usuario",
+          required: true,
+          schema: {
+            type: "string",
+            format: "email"
+          }
+        }
+      ],
+      result: {
+        name: "CreateUserResult",
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: {
+                id: { type: "number" },
+                name: { type: "string" },
+                email: { type: "string" },
+                createdAt: { type: "string" },
+                updatedAt: { type: "string" }
+              }
+            },
+            error: { type: "string" }
+          }
+        }
+      }
+    },
+    {
+      name: "getUserById",
+      description: "Obtener usuario por ID",
+      params: [
+        {
+          name: "id",
+          description: "ID del usuario",
+          required: true,
+          schema: {
+            type: "number"
+          }
+        }
+      ],
+      result: {
+        name: "GetUserResult",
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: {
+                id: { type: "number" },
+                name: { type: "string" },
+                email: { type: "string" },
+                createdAt: { type: "string" },
+                updatedAt: { type: "string" }
+              }
+            },
+            error: { type: "string" }
+          }
+        }
+      }
+    },
+    {
+      name: "getAllUsers",
+      description: "Obtener todos los usuarios",
+      params: [],
+      result: {
+        name: "GetAllUsersResult",
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "number" },
+                  name: { type: "string" },
+                  email: { type: "string" },
+                  createdAt: { type: "string" },
+                  updatedAt: { type: "string" }
+                }
+              }
+            },
+            error: { type: "string" }
+          }
+        }
+      }
+    },
+    {
+      name: "updateUser",
+      description: "Actualizar un usuario",
+      params: [
+        {
+          name: "id",
+          description: "ID del usuario",
+          required: true,
+          schema: {
+            type: "number"
+          }
+        },
+        {
+          name: "name",
+          description: "Nuevo nombre del usuario",
+          required: false,
+          schema: {
+            type: "string"
+          }
+        },
+        {
+          name: "email",
+          description: "Nuevo email del usuario",
+          required: false,
+          schema: {
+            type: "string",
+            format: "email"
+          }
+        }
+      ],
+      result: {
+        name: "UpdateUserResult",
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: {
+                id: { type: "number" },
+                name: { type: "string" },
+                email: { type: "string" },
+                createdAt: { type: "string" },
+                updatedAt: { type: "string" }
+              }
+            },
+            error: { type: "string" }
+          }
+        }
+      }
+    },
+    {
+      name: "deleteUser",
+      description: "Eliminar un usuario",
+      params: [
+        {
+          name: "id",
+          description: "ID del usuario",
+          required: true,
+          schema: {
+            type: "number"
+          }
+        }
+      ],
+      result: {
+        name: "DeleteUserResult",
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            message: { type: "string" },
+            error: { type: "string" }
+          }
+        }
+      }
+    }
+  ]
+};
+
+// src/index.ts
+import 'reflect-metadata';
+import { Server } from '@open-rpc/server-js';
+import express from 'express';
+import cors from 'cors';
+import { Database } from './database';
+import { UserService } from './rpc-methods';
+import { openRPCDocument } from './openrpc-schema';
+
+class OpenRPCServer {
+  private app: express.Application;
+  private database: Database;
+  private userService: UserService;
+  private server: Server;
+
+  constructor() {
+    this.app = express();
+    this.database = new Database();
+    this.userService = new UserService(this.database);
+    this.server = new Server();
+    
+    this.setupMiddleware();
+    this.setupRPCMethods();
+    this.setupRoutes();
+  }
+
+  private setupMiddleware() {
+    this.app.use(cors());
+    this.app.use(express.json());
+  }
+
+  private setupRPCMethods() {
+    // Registrar métodos RPC
+    this.server.addMethod('createUser', async (params: any) => {
+      return this.userService.createUser(params);
+    });
+
+    this.server.addMethod('getUserById', async (params: any) => {
+      return this.userService.getUserById(params);
+    });
+
+    this.server.addMethod('getAllUsers', async () => {
+      return this.userService.getAllUsers();
+    });
+
+    this.server.addMethod('updateUser', async (params: any) => {
+      return this.userService.updateUser(params);
+    });
+
+    this.server.addMethod('deleteUser', async (params: any) => {
+      return this.userService.deleteUser(params);
+    });
+
+    // Configurar el documento OpenRPC
+    this.server.setOpenRPCDocument(openRPCDocument);
+  }
+
+  private setupRoutes() {
+    // Endpoint para el documento OpenRPC
+    this.app.get('/openrpc.json', (req, res) => {
+      res.json(openRPCDocument);
+    });
+
+    // Endpoint principal para JSON-RPC
+    this.app.post('/rpc', async (req, res) => {
+      try {
+        const result = await this.server.receive(req.body);
+        res.json(result);
+      } catch (error) {
+        console.error('RPC Error:', error);
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32603,
+            message: 'Internal error'
+          },
+          id: req.body.id || null
+        });
+      }
+    });
+
+    // Página de prueba simple
+    this.app.get('/', (req, res) => {
+      res.send(`
+        <html>
+          <head>
+            <title>OpenRPC Server</title>
+          </head>
+          <body>
+            <h1>🚀 OpenRPC Server con MikroORM</h1>
+            <p>El servidor está funcionando correctamente!</p>
+            <ul>
+              <li><a href="/openrpc.json">Ver esquema OpenRPC</a></li>
+              <li>Endpoint RPC: <code>POST /rpc</code></li>
+            </ul>
+            <h2>Ejemplo de petición:</h2>
+            <pre>
+POST /rpc
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "method": "createUser",
+  "params": {
+    "name": "Juan Pérez",
+    "email": "juan@example.com"
+  },
+  "id": 1
+}
+            </pre>
+          </body>
+        </html>
+      `);
+    });
+  }
+
+  async start(port: number = 3000) {
+    try {
+      // Conectar a la base de datos
+      await this.database.connect();
+      
+      // Iniciar el servidor
+      this.app.listen(port, () => {
+        console.log(`🚀 OpenRPC Server running on http://localhost:${port}`);
+        console.log(`📋 OpenRPC Schema: http://localhost:${port}/openrpc.json`);
+        console.log(`⚡ RPC Endpoint: http://localhost:${port}/rpc`);
+      });
+    } catch (error) {
+      console.error('❌ Failed to start server:', error);
+      process.exit(1);
+    }
+  }
+
+  async stop() {
+    await this.database.disconnect();
+  }
+}
+
+// Iniciar el servidor
+const server = new OpenRPCServer();
+
+// Manejar cierre graceful
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down server...');
+  await server.stop();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Shutting down server...');
+  await server.stop();
+  process.exit(0);
+});
+
+// Iniciar el servidor
+server.start(3000);
