@@ -1,0 +1,6 @@
+Backend/.vscode
+Backend/dist
+Backend/node_modules
+
+Frontend/.vscode
+Frontend/node_modules
